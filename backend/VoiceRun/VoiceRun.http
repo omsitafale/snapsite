@@ -1,0 +1,6 @@
+@VoiceRun_HostAddress = http://localhost:5185
+
+GET {{VoiceRun_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
