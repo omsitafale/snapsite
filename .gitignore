@@ -1,0 +1,10 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/backend/.vs
+/backend/VoiceRun/VoiceRun/bin/Debug/net8.0
+/backend/VoiceRun/.vs
+/backend/VoiceRun/VoiceRun/obj
+/backend/VoiceRun/bin/Debug/net8.0
+/backend/VoiceRun/obj
