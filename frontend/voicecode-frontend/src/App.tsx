@@ -1,170 +1,167 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 
 type FileModel = {
   name: string;
   content: string;
 };
 
-type EditModel = {
-  file: string;
-  action: string;   // "replace_region"
-  region: string;   // e.g. "AI_ZONE:button-styles"
-  content: string;
-};
-
 type GenerateResponse = {
   files: FileModel[] | null;
-  edits: EditModel[] | null;
-  run: { command: string; preview_port: number } | null;
   explain: string | null;
+  isEdit?: boolean;
 };
-function applyEdits(files: FileModel[], edits: EditModel[]): FileModel[] {
-  let updated = [...files];
 
-  for (const edit of edits) {
-    if (edit.action === "replace_region") {
-      updated = updated.map((f) => {
-        if (f.name !== edit.file) return f;
-
-        const region = edit.region; // e.g. "AI_ZONE:button-styles"
-        const startTag = `/* ${region}-start */`;
-        const endTag = `/* ${region}-end */`;
-
-        const startIndex = f.content.indexOf(startTag);
-        const endIndex = f.content.indexOf(endTag);
-
-        if (startIndex === -1 || endIndex === -1) {
-          console.warn("Region markers not found for", edit.region);
-          return f;
-        }
-
-        const before = f.content.slice(0, startIndex + startTag.length);
-        const after = f.content.slice(endIndex);
-
-        const newContent = `${before}\n${edit.content}\n${after}`;
-        return { ...f, content: newContent };
-      });
-    }
-  }
-
-  return updated;
-}
-
-const API_BASE = "https://localhost:44327"; // 🔴 change this port to your backend port
+const API_BASE = "https://localhost:44327"; // your backend
 
 function App() {
-  const [prompt, setPrompt] = useState(
-    "Create a simple calculator UI with HTML, CSS and JavaScript."
-  );
+  const [prompt, setPrompt] = useState("");
   const [files, setFiles] = useState<FileModel[]>([]);
   const [explain, setExplain] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [edit, setEdit] = useState<boolean>(false);
+
   const [activeFileName, setActiveFileName] = useState<string | null>(null);
 
-  const handleGenerate = async () => {
+  // Voice mode states
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  // -------------------------------------------------------------------
+  //  Voice Recognition Setup
+  // -------------------------------------------------------------------
+  const setupRecognition = () => {
+    const SpeechRecognition =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert("This browser does not support voice input.");
+      return null;
+    }
+
+    const rec = new SpeechRecognition();
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.continuous = false;
+
+    return rec;
+  };
+
+  // Start listening
+  const startListening = () => {
+    if (!voiceMode) return;
+    if (!recognitionRef.current) recognitionRef.current = setupRecognition();
+
+    const rec = recognitionRef.current;
+    if (!rec) return;
+
+    setListening(true);
+    rec.start();
+
+    rec.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setPrompt(transcript);
+
+      // Auto-generate → auto-preview
+      autoGenerateFromVoice(transcript);
+    };
+
+    rec.onerror = () => {
+      setListening(false);
+      if (voiceMode) setTimeout(startListening, 800); // retry
+    };
+
+    rec.onend = () => {
+      setListening(false);
+      if (voiceMode) setTimeout(startListening, 500);
+    };
+  };
+
+  // -------------------------------------------------------------------
+  //  Auto-generate when voice input is received
+  // -------------------------------------------------------------------
+  const autoGenerateFromVoice = async (text: string) => {
+    await handleGenerate(text, true);
+    handleRun(); // auto-preview
+  };
+
+  // -------------------------------------------------------------------
+  //  Generate (used by both voice + text)
+  // -------------------------------------------------------------------
+  const handleGenerate = async (customPrompt?: string, isVoice?: boolean) => {
   setLoading(true);
   setError(null);
   setPreviewUrl(null);
 
-  // 🔹 Decide mode based on whether we already have files
+  const currentPrompt = customPrompt ?? prompt;
   const isEdit = files.length > 0;
+
+  // STOP if prompt is empty (in text mode)
+  if (!voiceMode && currentPrompt.trim() === "") {
+    setError("Please enter a prompt.");
+    setLoading(false);
+    return;
+  }
 
   try {
     const resp = await fetch(`${API_BASE}/api/code/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        prompt,
-        isEdit,                          // 👈 now correct
-        currentFiles: isEdit ? files : null, // 👈 send files only in edit mode
+        prompt: currentPrompt,
+        isEdit,
+        currentFiles: isEdit ? files : null,
       }),
     });
 
+    // Handle NON-JSON backend errors safely
+    const text = await resp.text();
+
     if (!resp.ok) {
-      const txt = await resp.text();
-      throw new Error(`Backend error: ${resp.status} - ${txt}`);
+      // Backend error (like "Prompt is required")
+      setError(text);
+      setLoading(false);
+      return;
     }
 
-    const data: GenerateResponse = await resp.json();
+    const data: GenerateResponse = JSON.parse(text);
 
-    // If it's initial generation → use data.files
-    // If it's edit mode → we expect data.edits and must apply them to existing files
+    const newFiles = data.files || [];
+    setFiles(newFiles);
+    setExplain(data.explain || null);
 
-    if (!isEdit) {
-      // initial generation
-      const newFiles = data.files || [];
-      setFiles(newFiles);
-      setExplain(data.explain || null);
-
-      if (newFiles.length > 0) {
-        setActiveFileName(newFiles[0].name);
-      }
-    } else {
-      // edit mode
-      if (data.edits && Array.isArray(data.edits)) {
-        const updated = applyEdits(files, data.edits);
-        setFiles(updated);
-        setExplain(data.explain || null);
-      } else {
-        setError("No edits returned from backend.");
-      }
-    }
+    setActiveFileName(newFiles[0]?.name || null);
   } catch (err: any) {
-    setError(err.message || "Unknown error");
+    setError(err.message);
   } finally {
     setLoading(false);
   }
 };
 
-  // Simple editor: update file content in state
-  const updateFileContent = (name: string, content: string) => {
-    setFiles((prev) =>
-      prev.map((f) => (f.name === name ? { ...f, content } : f))
-    );
-  };
-
+  // -------------------------------------------------------------------
+  //  Run (Preview)
+  // -------------------------------------------------------------------
   const handleRun = () => {
     if (!files || files.length === 0) return;
 
-    const html = files.find((f) => f.name.toLowerCase() === "index.html")
-      ?.content;
-    const css = files.find((f) => f.name.toLowerCase() === "style.css")
-      ?.content;
-    const js = files.find((f) => f.name.toLowerCase() === "app.js")?.content;
+    const html = files.find((f) => f.name === "index.html")?.content;
+    const css = files.find((f) => f.name === "style.css")?.content;
+    const js = files.find((f) => f.name === "app.js")?.content;
 
     if (!html) {
-      setError("index.html not found in files.");
+      setError("index.html missing.");
       return;
     }
 
-    // Inject CSS and JS into HTML
     let finalHtml = html;
 
     if (css) {
-      if (finalHtml.includes("</head>")) {
-        finalHtml = finalHtml.replace(
-          "</head>",
-          `<style>\n${css}\n</style>\n</head>`
-        );
-      } else {
-        finalHtml =
-          `<style>\n${css}\n</style>\n` +
-          finalHtml; // fallback: prepend
-      }
+      finalHtml = finalHtml.replace("</head>", `<style>${css}</style></head>`);
     }
-
     if (js) {
-      if (finalHtml.includes("</body>")) {
-        finalHtml = finalHtml.replace(
-          "</body>",
-          `<script>\n${js}\n</script>\n</body>`
-        );
-      } else {
-        finalHtml += `\n<script>\n${js}\n</script>\n`; // fallback
-      }
+      finalHtml = finalHtml.replace("</body>", `<script>${js}</script></body>`);
     }
 
     const blob = new Blob([finalHtml], { type: "text/html" });
@@ -172,83 +169,141 @@ function App() {
     setPreviewUrl(url);
   };
 
+  // -------------------------------------------------------------------
+  //  Start voice mode automatically re-listening
+  // -------------------------------------------------------------------
+  useEffect(() => {
+    if (voiceMode) startListening();
+    else setListening(false);
+  }, [voiceMode]);
+
   const activeFile =
     files.find((f) => f.name === activeFileName) || files[0] || null;
 
+  // -------------------------------------------------------------------
+  //  UI
+  // -------------------------------------------------------------------
   return (
     <div
       style={{
         display: "flex",
         height: "100vh",
-        fontFamily: "system-ui, -apple-system, Segoe UI, sans-serif",
+        width: "100vw",
+        overflow: "hidden",
+        background: "#111",
+        color: "white",
       }}
     >
-      {/* Left panel: controls + editors */}
+      {/* LEFT PANEL */}
       <div
         style={{
           width: "50%",
+          height: "100%",
           padding: "12px",
           boxSizing: "border-box",
-          borderRight: "1px solid #ddd",
+          borderRight: "1px solid #333",
           display: "flex",
           flexDirection: "column",
-          gap: "8px",
+          overflow: "hidden",
         }}
       >
-        <h2>VoiceCode </h2>
+        <h2>VoiceCode</h2>
 
-        <label style={{ fontSize: "0.9rem", fontWeight: 600 }}>
-          Prompt
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={4}
+        {/* Mode Toggle */}
+        <div style={{ marginBottom: "10px" }}>
+          <button
+            onClick={() => setVoiceMode((v) => !v)}
             style={{
-              width: "100%",
-              marginTop: "4px",
-              boxSizing: "border-box",
-              padding: "6px",
+              padding: "6px 12px",
+              background: voiceMode ? "#C62828" : "#0078d4",
+              border: "none",
+              borderRadius: "4px",
+              color: "white",
+              cursor: "pointer",
             }}
-          />
-        </label>
-
-        <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
-          <button
-            onClick={handleGenerate}
-            disabled={loading}
-            style={{ padding: "6px 12px" }}
           >
-            {loading ? "Generating..." : "Generate"}
+            {voiceMode ? "Stop Voice Mode" : "Start Voice Mode"}
           </button>
 
-          <button
-            onClick={handleRun}
-            disabled={files.length === 0}
-            style={{ padding: "6px 12px" }}
-          >
-            Run
-          </button>
+          {voiceMode && (
+            <span style={{ marginLeft: "10px", color: "#0f0" }}>
+              {listening ? "Listening..." : "Waiting..."}
+            </span>
+          )}
         </div>
 
-        {error && (
-          <div style={{ color: "red", fontSize: "0.85rem" }}>{error}</div>
+        {/* PROMPT */}
+        {!voiceMode && (
+          <>
+            <label style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+              Prompt
+              <textarea
+                value={prompt}
+                placeholder="Create a simple calculator UI..."
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={4}
+                style={{
+                  width: "100%",
+                  marginTop: "4px",
+                  boxSizing: "border-box",
+                  padding: "6px",
+                }}
+              />
+            </label>
+
+           <div style={{ display: "flex", flexDirection: "row", gap: "10px", marginTop: "12px" }}>
+  <button
+    onClick={() => handleGenerate()}
+    disabled={loading}
+    style={{
+      padding: "8px 16px",
+      background: "#0078d4",
+      color: "white",
+      border: "none",
+      borderRadius: "4px",
+      cursor: "pointer",
+      minWidth: "100px",
+    }}
+  >
+    {loading ? "Generating..." : "Generate"}
+  </button>
+
+  <button
+    onClick={handleRun}
+    disabled={files.length === 0}
+    style={{
+      padding: "8px 16px",
+      background: "#444",
+      color: "white",
+      border: "none",
+      borderRadius: "4px",
+      cursor: "pointer",
+      minWidth: "80px",
+    }}
+  >
+    Run
+  </button>
+</div>
+          </>
         )}
 
+        {error && <div style={{ color: "red" }}>{error}</div>}
         {explain && (
           <div
             style={{
+              marginTop: "8px",
               fontSize: "0.85rem",
-              background: "#3b3b3b",
+              background: "#222",
               padding: "6px",
               borderRadius: "4px",
             }}
           >
-            <strong>Explain:</strong> {explain}
+            {explain}
           </div>
         )}
 
-        {/* File tabs */}
-        {files.length > 0 && (
+        {/* FILE TABS */}
+        {files.length > 0 && !voiceMode && (
           <>
             <div style={{ display: "flex", gap: "4px", marginTop: "8px" }}>
               {files.map((f) => (
@@ -257,13 +312,12 @@ function App() {
                   onClick={() => setActiveFileName(f.name)}
                   style={{
                     padding: "4px 8px",
-                    fontSize: "0.85rem",
                     border:
                       activeFileName === f.name
                         ? "2px solid #0078d4"
                         : "1px solid #ccc",
-                    background:
-                      activeFileName === f.name ? "#1a1a1a" : "#1a1a1a",
+                    background: "#1a1a1a",
+                    color: "white",
                     cursor: "pointer",
                   }}
                 >
@@ -273,53 +327,80 @@ function App() {
             </div>
 
             {activeFile && (
-              <div style={{ marginTop: "8px", flex: 1, minHeight: 0 }}>
-                <div
-                  style={{
-                    fontSize: "0.8rem",
-                    marginBottom: "4px",
-                    opacity: 0.7,
-                  }}
-                >
-                  Editing: {activeFile.name}
-                </div>
-                <textarea
-                  value={activeFile.content}
-                  onChange={(e) =>
-                    updateFileContent(activeFile.name, e.target.value)
-                  }
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    minHeight: "250px",
-                    boxSizing: "border-box",
-                    fontFamily: "monospace",
-                    fontSize: "0.85rem",
-                    padding: "6px",
-                  }}
-                />
-              </div>
+              <textarea
+                value={activeFile.content}
+                onChange={(e) =>
+                  setFiles((prev) =>
+                    prev.map((f) =>
+                      f.name === activeFile.name
+                        ? { ...f, content: e.target.value }
+                        : f
+                    )
+                  )
+                }
+                style={{
+                  flex: 1,
+                  marginTop: "8px",
+                  width: "100%",
+                  boxSizing: "border-box",
+                  fontFamily: "monospace",
+                  background: "#1d1d1d",
+                  color: "white",
+                  padding: "8px",
+                }}
+              />
             )}
           </>
         )}
       </div>
 
-      {/* Right panel: preview */}
-      <div style={{ width: "50%", padding: "12px", boxSizing: "border-box" }}>
+      {/* RIGHT PANEL (PREVIEW) */}
+      <div
+        style={{
+          width: "50%",
+          padding: "12px",
+          boxSizing: "border-box",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
+      >
         <h3>Preview</h3>
-        {!previewUrl && <div>Click "Run" to see preview here.</div>}
-        {previewUrl && (
-          <iframe
-            src={previewUrl}
-            title="Preview"
-            style={{
-              width: "100%",
-              height: "90%",
-              border: "1px solid #ccc",
-              borderRadius: "4px",
-            }}
-          />
-        )}
+
+        <div
+          style={{
+            flex: 1,
+            width: "100%",
+            background: "#000",
+            borderRadius: "6px",
+            overflow: "hidden",
+          }}
+        >
+          {!previewUrl ? (
+            <div
+              style={{
+                width: "100%",
+                height: "100%",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+                color: "#aaa",
+              }}
+            >
+              Run to preview
+            </div>
+          ) : (
+            <iframe
+              src={previewUrl}
+              style={{
+                width: "100%",
+                height: "100%",
+                border: "none",
+                background: "white",
+              }}
+            />
+          )}
+        </div>
       </div>
     </div>
   );
