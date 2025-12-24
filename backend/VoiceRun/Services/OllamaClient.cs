@@ -2,18 +2,12 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using VoiceCode.Backend.Models;
+using VoiceRun.Models;
 
 namespace VoiceCode.Backend.Services;
 
 public class OllamaClient : IOllamaClient
 {
-    private const string OllamaUrl = "http://127.0.0.1:11434/api/chat";
-    private const string ModelName = "deepseek-v3.1:671b-cloud";
-
-    public OllamaClient()
-    {
-    }
-
     public async Task<GenerateResponse> GenerateAsync(GenerateRequest req)
     {
         bool isEdit = req.IsEdit && req.CurrentFiles is not null && req.CurrentFiles.Any();
@@ -23,99 +17,29 @@ public class OllamaClient : IOllamaClient
 
         if (!isEdit)
         {
-            // Initial project generation
-            systemPrompt = """
-            You are a code generator for small HTML/CSS/JS web apps.
+            // Generation mode
+            systemPrompt = PromptTemplates.GenerateSystemPrompt;
 
-            You MUST respond with ONLY a JSON object, wrapped in triple backticks.
-
-            JSON shape:
-            {
-              "files": [
-                { "name": "index.html", "content": "<!DOCTYPE html>..." },
-                { "name": "style.css", "content": "/* CSS here */" },
-                { "name": "app.js", "content": "// JS here" }
-              ],
-              "run": {
-                "command": "serve /app",
-                "preview_port": 8080
-              },
-              "explain": "Short explanation of what you built."
-            }
-
-            Rules:
-            - Only generate HTML, CSS and JavaScript.
-            - Use filenames index.html, style.css and app.js unless the user asks otherwise.
-            - For styles that might change later (like button styles), wrap them in comment markers:
-
-              /* AI_ZONE:button-styles-start */
-              button { background:#ddd; color:#000; }
-              /* AI_ZONE:button-styles-end */
-
-            - Do NOT output any text outside the JSON.
-            - Always wrap the JSON in triple backticks ```json ... ```.
-
-            """;
-
-            userPrompt = $"""
-            Create a small HTML/CSS/JS web app based on this request:
-
-            "{req.Prompt}"
-
-            The app should be self-contained and use index.html, style.css and app.js.
-            """;
+            userPrompt = PromptTemplates.GenerateUserPrompt
+                .Replace("{PROMPT}", req.Prompt);
         }
         else
         {
-            // Edit mode (replace_region edits)
+            // Edit mode
             var currentFilesJson = JsonSerializer.Serialize(
                 req.CurrentFiles,
-                new JsonSerializerOptions { WriteIndented = false });
+                new JsonSerializerOptions { WriteIndented = false }
+            );
 
-            systemPrompt = """
-            You are a code editor for small HTML/CSS/JS web apps.
+            systemPrompt = PromptTemplates.EditSystemPrompt;
 
-            You MUST respond with ONLY a JSON object, wrapped in triple backticks.
-
-            JSON shape:
-            {
-              "edits": [
-                {
-                  "file": "style.css",
-                  "action": "replace_region",
-                  "region": "AI_ZONE:button-styles",
-                  "content": "button { background: orange; color: white; }"
-                }
-              ],
-              "explain": "Short explanation of what you changed."
-            }
-
-            Rules:
-            - Use "replace_region" edits targeting existing regions that look like:
-                /* AI_ZONE:button-styles-start */
-                ... old content ...
-                /* AI_ZONE:button-styles-end */
-            - "region" field should match the base name, e.g. "AI_ZONE:button-styles".
-            - Do NOT regenerate whole files here, only edits.
-            - Do NOT output anything outside the JSON.
-            - Always wrap the JSON in triple backticks ```json ... ```.
-
-            """;
-
-            userPrompt = $"""
-            Existing files (JSON):
-            {currentFilesJson}
-
-            User request:
-            "{req.Prompt}"
-
-            Return ONLY the edits needed to satisfy the user request.
-            """;
+            userPrompt = PromptTemplates.EditUserPrompt
+                .Replace("{PROMPT}", req.Prompt)
+                .Replace("{CURRENT_FILES}", currentFilesJson);
         }
-
         var body = new
         {
-            model = ModelName,
+            model = CommonModel.ModelName,
             messages = new[]
             {
                 new { role = "system", content = systemPrompt },
@@ -132,11 +56,10 @@ public class OllamaClient : IOllamaClient
         };
         HttpResponseMessage httpResponse;
 
-        Console.WriteLine($"[OllamaClient] Calling: {OllamaUrl}");
 
         try
         {
-            httpResponse = await http.PostAsync(OllamaUrl,new StringContent(jsonBody, Encoding.UTF8, "application/json"));
+            httpResponse = await http.PostAsync(CommonModel.OllamaURL, new StringContent(jsonBody, Encoding.UTF8, "application/json"));
         }
         catch (Exception ex)
         {
@@ -145,7 +68,6 @@ public class OllamaClient : IOllamaClient
         }
 
         var responseText = await httpResponse.Content.ReadAsStringAsync();
-        Console.WriteLine($"[OllamaClient] Status: {httpResponse.StatusCode}");
 
         if (!httpResponse.IsSuccessStatusCode)
         {

@@ -4,6 +4,17 @@ using VoiceRun.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var configuration = new ConfigurationBuilder().AddJsonFile("appsettings.json").Build();
+
+CommonModel.OllamaURL = configuration.GetSection("OllamaConfig:OllamaUrl").Value;
+CommonModel.ModelName = configuration.GetSection("OllamaConfig:ModelName").Value;
+
+PromptTemplates.GenerateSystemPrompt = configuration.GetSection("PromptTemplates:GenerateSystemPrompt").Value;
+PromptTemplates.EditSystemPrompt = configuration.GetSection("PromptTemplates:EditSystemPrompt").Value;
+
+PromptTemplates.GenerateUserPrompt = configuration.GetSection("PromptTemplates:GenerateUserPrompt").Value;
+PromptTemplates.EditUserPrompt = configuration.GetSection("PromptTemplates:EditUserPrompt").Value;
+
 var workspaceRoot = Path.Combine(Directory.GetCurrentDirectory(), "GeneratedApp");
 Directory.CreateDirectory(workspaceRoot);
 
